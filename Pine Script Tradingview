@@ -1,0 +1,31 @@
+//@version=5 strategy("📊 Mimic NY Strategy (Day-Control + Patterns + Risk)", overlay=true, default_qty_type=strategy.percent_of_equity)
+
+// === User Controls === botEnabled     = input.bool(true, "Enable Bot", group="Bot Settings") tradeSunday    = input.bool(true, "Trade Sunday", group="Bot Settings")
+
+// === Time Controls === nyOffset        = input.int(-4, "New York Time Offset", minval=-12, maxval=12) riskPercent     = input.float(1.0, "Risk per Trade (%)", minval=0.1, step=0.1) slPips          = input.float(10, "Stop Loss (Pips)", step=0.1) tpPips          = input.float(20, "Take Profit (Pips)", step=0.1) lookback        = input.int(2, "Structure Lookback (Hours)") mimicTimesInput = input.string("08:00,16:00", "Mimic Times (NY)") referenceHour   = input.int(2, "Reference Hour (NY)", minval=0, maxval=23) referenceMinute = input.int(0, "Reference Minute (NY)", minval=0, maxval=59)
+
+// === Time Handling === getNYTime(hour, min) => timestamp("GMT" + str.tostring(nyOffset), year(time), month(time), dayofmonth(time), hour, min)
+
+// Check if mimic time falls within the current bar isMimicTimeInBar(mimicTime) => time <= mimicTime and mimicTime < time + timeframe.multiplier * 60 * 1000
+
+parts = str.split(mimicTimesInput, ",") isMimic = false for i = 0 to array.size(parts) - 1 t = array.get(parts, i) h = str.tonumber(str.split(t, ":")[0]) m = str.tonumber(str.split(t, ":")[1]) mimicTime = getNYTime(h, m) isMimic := isMimic or isMimicTimeInBar(mimicTime)
+
+// === Reference Candle (Default 2am NY) === refTime = getNYTime(referenceHour, referenceMinute) var float refOpen = na var float refClose = na var float refHigh = na var float refLow = na var int refDir = 0
+
+if time == refTime refOpen := open refClose := close refHigh := high refLow := low refDir := close > open ? 1 : -1
+
+// === Trend Detection === hh = ta.highest(high, lookback) ll = ta.lowest(low, lookback) prevH = ta.highest(high[lookback], lookback) prevL = ta.lowest(low[lookback], lookback) trend = hh > prevH and ll > prevL ? 1 : hh < prevH and ll < prevL ? -1 : 0 mimicDir = trend != refDir and trend != 0 ? -refDir : refDir
+
+// === SL/TP Levels === pip = syminfo.mintick * 10 slPoints = slPips * pip tpPoints = tpPips * pip
+
+// === Candle Patterns === isBullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1] isBearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1] isHammer = (high - low) > 3 * math.abs(open - close) and ((close - low) / (0.001 + high - low)) > 0.6 and not (math.abs(open - close) < (high - low) * 0.1) isInvertedHammer = (high - low) > 3 * math.abs(open - close) and ((high - close) / (0.001 + high - low)) > 0.6 and not (math.abs(open - close) < (high - low) * 0.1) isMorningStar = close[2] < open[2] and math.abs(close[1] - open[1]) < (high[1] - low[1]) * 0.3 and close > open and close > (open[2] + close[2]) / 2 isEveningStar = close[2] > open[2] and math.abs(close[1] - open[1]) < (high[1] - low[1]) * 0.3 and close < open and close < (open[2] + close[2]) / 2 isDragonflyDoji = math.abs(open - close) < (high - low) * 0.1 and (high - math.max(open, close)) > 2 * (math.max(open, close) - low) isGravestoneDoji = math.abs(open - close) < (high - low) * 0.1 and (math.min(open, close) - low) > 2 * (high - math.min(open, close))
+
+isBullPattern = isBullishEngulfing or isHammer or isInvertedHammer or isMorningStar or isDragonflyDoji isBearPattern = isBearishEngulfing or isEveningStar or isGravestoneDoji
+
+// === Day Filter === isTodayAllowed = (dayofweek == dayofweek.sunday and tradeSunday)
+
+// === Final Entry Conditions === shouldTrade = (mimicDir == 1 and isBullPattern) or (mimicDir == -1 and isBearPattern) canTrade = botEnabled and isTodayAllowed and isMimic and shouldTrade
+
+if canTrade if mimicDir == 1 strategy.entry("BUY", strategy.long, qty_percent=riskPercent) strategy.exit("TP/SL", from_entry="BUY", stop=close - slPoints, limit=close + tpPoints) if mimicDir == -1 strategy.entry("SELL", strategy.short, qty_percent=riskPercent) strategy.exit("TP/SL", from_entry="SELL", stop=close + slPoints, limit=close - tpPoints)
+
+// === Visuals === plotshape(time == refTime, title="Ref Time (2am NY)", location=location.top, style=shape.square, color=color.yellow, size=size.tiny) plotshape(canTrade and mimicDir == 1, title="Buy", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small) plotshape(canTrade and mimicDir == -1, title="Sell", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
